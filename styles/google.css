@@ -1,0 +1,91 @@
+#classicBtn {
+    left: 250px;
+    top: 180px;
+    width: 200px;
+    height: 50px;
+}
+
+#specialBtn {
+    left: 250px;
+    top: 250px;
+    width: 200px;
+    height: 50px;
+}
+
+#optionsBtn {
+    left: 250px;
+    top: 320px;
+    width: 200px;
+    height: 50px;
+}
+#quitBtn {
+    left: 250px;
+    top: 390px;
+    width: 200px;
+    height: 50px;
+}
+button {
+    background-color: white;
+}
+button:hover {
+    background-color: #A2D149;
+}
+.home {
+    background-color: white;
+}
+
+#homeWindow {
+    background-image: 'cta.png';
+    background-size: 100% auto;
+    background-position: left bottom;
+    background-color: #4AC0FD;
+}
+#optionsWindow {
+    background-image: 'cta.png';
+    background-size: 100% auto;
+    background-position: left bottom;
+    background-color: #4AC0FD;
+}
+
+#gameBoard {
+    background-color: #4a752c;
+}
+#snakePlayArea {
+    background-image: 'snake-google2.png';
+}
+#scorePanel {
+    background-color: #4a752c;
+}
+#scoreIcon {
+    background-color: #4a752c;
+}
+#scoreLabel {
+    background-color: #4a752c;
+}
+#highestScorePanel {
+    background-color: #4a752c;
+}
+#highestScoreIcon {
+    background-color: #4a752c;
+}
+#gameOverPanel {
+    background-image: 'rainbow.png';
+    background-size: 100% 100%;
+    background-color: black;
+}
+.title {
+    font-size: 58pt;
+    font-family: Impact;
+}
+#replayBtn {
+    left: 40px;
+    top: 180px;
+    width: 100px;
+    height: 50px;
+}
+#cancelBtn {
+    left: 180px;
+    top: 180px;
+    width: 100px;
+    height: 50px;
+}

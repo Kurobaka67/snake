@@ -1,15 +1,38 @@
 import random, time, pygame, sys, os
 from pygame.locals import *
 import pygame.mixer
+import pygame.time
 import pygame.sprite
-from Games import *
-from Colors import *
+from gui import * 
+from game import * 
+import getpass
+from operator import attrgetter
+import logging
 
 os.environ['SDL_VIDEO_WINDOW_POS'] = "%d,%d" % (500, 150)
-BOXSIZE = 20
 POSITION_INITX = 561
 POSITION_INITY = 281
+
+class Direction:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+    def get_inverse(self):
+        return Direction(-self.x,-self.y)
+    def __eq__(self, other):
+        if isinstance(other, Direction):
+            return self.x == other.x and self.y == other.y
+        return False
+
+UP = Direction(0,-1)
+DOWN = Direction(0,1)
+LEFT = Direction(-1,0)
+RIGHT = Direction(1,0)
+
+
 class SegmentIterator :
+    FORWARD = 'forward'
+    BACKWARD = 'backward'
     def __init__(self,segment, direction):
         self.segment = segment
         self.direction = direction
@@ -22,32 +45,36 @@ class SegmentIterator :
             raise StopIteration()
         else :
             s = self.segment
-            if self.direction =='forward':
+            if self.direction == SegmentIterator.FORWARD:
                 self.segment = self.segment.ahead
             else :
                 self.segment = self.segment.behind
             return s
-class SnakeSegment(Component):
-    def __init__(self, cell, selectImage):
-        super().__init__("snakeSegment", cell.xInPixel(), cell.yInPixel())
-        self.position = cell
-        self.target = self.position 
+class SnakeSegment(pygame.sprite.Sprite):
+    def __init__(self, cell, snake, orientation):
+        pygame.sprite.Sprite.__init__(self)                
+        self.cell = cell 
         self.ahead = None
         self.behind = None
-        self.selectImage = selectImage
-    def addSegmentAtTail(self, selectImage):
-        cell = Cell(self.position.x,self.position.y+1, self.position.area)
-        s = SnakeSegment(cell,selectImage)
-        s.ahead=self
+        self.snake = snake        
+        self.snake.add(self)         
+        self.orientation = orientation
+    def addSegmentBehind(self):
+        shift = self.orientation.get_inverse()
+        s = SnakeSegment(self.cell.at(shift.x,shift.y),self.snake,self.orientation)
+        s.ahead = self
+        if self.behind != None:
+            self.behind.ahead = s
+            s.behind = self.behind
         self.behind = s
         return s
-    def grow(self, position):
-        cell = Cell(position.x,position.y, self.position.area)
-        head = self.head()
-        s = SnakeSegment(cell,head.selectImage)
-        head.ahead=s
-        s.behind = head
-        head.selectImage = head.behind.selectImage
+    def addSegmentAhead(self, shift):
+        s = SnakeSegment(self.cell.at(shift.x,shift.y),self.snake,shift)
+        s.behind = self
+        if self.ahead != None:
+            self.ahead.behind = s
+            s.ahead = self.ahead
+        self.ahead = s
         return s
     def head(self):
         s = self
@@ -67,185 +94,157 @@ class SnakeSegment(Component):
         return self.ahead != None and self.behind != None
     def isCorner(self):
         if self.isTrunk() :
-            if self.ahead.position.x != self.behind.position.x and self.ahead.position.y != self.behind.position.y:
+            if self.ahead.cell.i != self.behind.cell.i and self.ahead.cell.j != self.behind.cell.j:
                 return True                
         return False
     def moveTo(self, target):
+        self.cell.drawn = False
         if self.behind != None:
-            self.behind.moveTo(self.position)
-        self.position = target
+            self.behind.moveTo(self.cell)
+            self.behind.orientation = self.orientation
+        self.cell = target
+    def move(self,orientation):
+        shift = orientation
+        self.cell.drawn = False
+        if self.behind != None:
+            self.behind.moveTo(self.cell)
+            self.behind.orientation = self.orientation
+        self.cell = self.cell.at(shift.x,shift.y)
+        self.orientation = orientation
     def forward(self):
-        return SegmentIterator(self, 'forward')
+        return SegmentIterator(self, SegmentIterator.FORWARD)
     def backward(self):
-        return SegmentIterator(self, 'backward')
-    def draw(self):
-        image = pygame.transform.scale(self.selectImage(self),(BOXSIZE,BOXSIZE))
-        Game.window.blit(image,(self.position.xInPixel(), self.position.yInPixel()))
-        #if self.ahead == self.head():
-        #    Game.window.blit(self.selectImage(self),Position.convertPositionToPixel(self.position.x, self.position.y))
-    def reset(self):
-        self.position.reset()
-        #self.position = self.target
-class Snake(Component):
-    def __init__(self, cell, playArea):
-        super().__init__("snake", cell.xInPixel(), cell.yInPixel())
-        self.spriteSheet = SpriteSheet("images/snake-graphics.png",32,5,4)
-        self.compteur = 0
-        self.playArea = playArea
-        self.started = False
-        self.direction = K_UP
-        self.head = SnakeSegment(cell,self.headImage)
-        self.tail = self.head.addSegmentAtTail(self.bodyImage).addSegmentAtTail(self.tailImage)
-        #self.body = [Position(posx,posy),Position(posx,posy + 1),Position(posx,posy + 2)]
+        return SegmentIterator(self, SegmentIterator.BACKWARD)
+    def update(self):
+        self.image = pygame.transform.scale(self.get_image(),(Cell.SIZE,Cell.SIZE))
+        self.rect = self.cell.get_rect()
+#    def draw(self):
+        #image = pygame.transform.scale(self.get_image(),(Cell.SIZE,Cell.SIZE))
+#        self.cell.draw_image(self.image)
+    def get_image(self):
+        if self.isHead() :
+            return self.snake.headImage(self)
+        if self.isTail() :
+            return self.snake.tailImage(self)
+        else :
+            return self.snake.bodyImage(self)
+    def __str__(self):
+        if self.isHead():
+            return "Head("+str(self.cell.i)+","+str(self.cell.j)+")"
+        elif self.isTail():
+            return "Tail("+str(self.cell.i)+","+str(self.cell.j)+")"
+        else:
+            return "Body("+str(self.cell.i)+","+str(self.cell.j)+")"
+
+class Snake(pygame.sprite.RenderPlain):
+    available_moves = {K_UP:UP,K_DOWN:DOWN,K_LEFT:LEFT,K_RIGHT:RIGHT}
+    def __init__(self, cell,spriteSheet,orientation=UP):
+        super().__init__( )
+        self.playArea = cell.map.area
+        self.spriteSheet = spriteSheet
+        self.head = SnakeSegment(cell,self, orientation)
+        body = self.head.addSegmentBehind()
+        self.tail = body.addSegmentBehind()
         self.growing =False
         self.alive = True
-        self.speed = 6
-        self.frames = int(Game.fps/self.speed)
-        self.pixelsToMove = BOXSIZE/self.frames      
-        self.target = self.head.position.atUp()
+        self.nextMove = None 
         self.keysPressed = []
-        #print("Pixels to move:",self.pixelsToMove )
-        #pygame.sprite.Sprite.__init__(self)
-   
+        self.tongue = None
+        self.eyes = None
+        self.speed = 6
+        self.frameCounter = TimeTrigger(150)
     def isAt(self, pos):
-        for seg in self.head.backward():
-            if seg.position == pos:
-                return True
+        if self.head.cell == pos:
+            return True
         return False
     def move(self):
         if self.growing:
-            self.head = self.head.grow(self.target)
+            self.head = self.head.addSegmentAhead(self.nextMove)
             self.growing = False
         else :
-            self.head.moveTo(self.target)
-        self.target = self.computeTarget()
+            self.head.move(self.nextMove)
     def changeDirection(self, direction):
-        if self.direction == K_UP and direction == K_DOWN:
+        if self.head.orientation == UP and direction == K_DOWN:
             return
-        if self.direction == K_DOWN and direction == K_UP:
+        if self.head.orientation == DOWN and direction == K_UP:
             return
-        if self.direction == K_RIGHT and direction == K_LEFT:
+        if self.head.orientation == RIGHT and direction == K_LEFT:
             return
-        if self.direction == K_LEFT and direction == K_RIGHT:
+        if self.head.orientation == LEFT and direction == K_RIGHT:
             return       
-        self.started = True
-        #print("Change direction to ",direction)
-        self.direction = direction
-        self.target = self.computeTarget()
-        #self.head.changeTarget(self.target)
-    def computeTarget(self) :
-        target = None
-        if self.direction == K_UP:
-                target = self.head.position.atUp()
-        if self.direction == K_DOWN:
-                target = self.head.position.atDown()
-        if self.direction == K_RIGHT:
-                target = self.head.position.atRight()
-        if self.direction == K_LEFT:
-                target = self.head.position.atLeft()
-        if target != None:
-            print("Target:",target.x, target.y)
-        return target
+        #logging.debug("Change direction to ",direction)
+        self.nextMove = Snake.available_moves[direction]
+
     def draw(self):
-        for seg in self.tail.forward():
-            if(self.started and False):
-                if seg.isHead():
-                    if self.target == seg.position.atUp():
-                        seg.position.incrementYInPixel(-self.pixelsToMove)
-                    if self.target == seg.position.atDown():
-                        seg.position.incrementYInPixel(self.pixelsToMove)
-                    if self.target == seg.position.atRight():
-                        seg.position.incrementXInPixel(self.pixelsToMove)
-                    if self.target == seg.position.atLeft():
-                        seg.position.incrementXInPixel(-self.pixelsToMove)
-                elif seg.isTail():
-                    if seg.ahead.position == seg.position.atUp():
-                        seg.position.incrementYInPixel(-self.pixelsToMove)
-                    if seg.ahead.position == seg.position.atDown():
-                        seg.position.incrementYInPixel(self.pixelsToMove)
-                    if seg.ahead.position == seg.position.atRight():
-                        seg.position.incrementXInPixel(self.pixelsToMove)
-                    if seg.ahead.position == seg.position.atLeft():
-                        seg.position.incrementXInPixel(-self.pixelsToMove)
-                elif not seg.isCorner():
-                    print("not a corner")
-                    if seg.ahead.position == seg.position.atUp():
-                        seg.position.incrementYInPixel(-self.pixelsToMove)
-                    if seg.ahead.position == seg.position.atDown():
-                        seg.position.incrementYInPixel(self.pixelsToMove)
-                    if seg.ahead.position == seg.position.atRight():
-                        seg.position.incrementXInPixel(self.pixelsToMove)
-                    if seg.ahead.position == seg.position.atLeft():
-                        seg.position.incrementXInPixel(-self.pixelsToMove)
-            seg.draw()
+        #for seg in self.tail.forward():
+        #    seg.draw()
+        super().draw(self.playArea.backgroundLayer)
+        #self.tongue.draw()
+        #self.eyes.draw()
     def grow(self):
         self.growing = True
-    #def print(self) :
-        #print("Head(",self.head.x,",",self.head.y,")")
-        #for seg in self.body:
-            #print("Body(",seg.x,",",seg.y,")")
-        #print("Tail(", self.tail.x,",",self.tail.y,")")
-
+    def __str__(self) :
+        s = 'Snake: '
+        for seg in self.head.backward():
+            if seg.isTail():
+                s += str(seg)
+            else: 
+                s += str(seg)+" - "
+        return s
     def headImage(self,seg):
-        #print("Head image",seg)
-        if self.target == seg.position.atUp():
+        #logging.debug("Head image",seg)
+        if seg.orientation == UP:
             return self.spriteSheet.image(3,0)
-        if self.target == seg.position.atDown():
+        if seg.orientation == DOWN:
             return self.spriteSheet.image(4,1)
-        if self.target == seg.position.atRight():
+        if seg.orientation == RIGHT:
             return self.spriteSheet.image(4,0)
-        if self.target == seg.position.atLeft():
+        if seg.orientation == LEFT:
             return self.spriteSheet.image(3,1)
     def tailImage(self,seg):
-        #print("Tail image",seg)
-        if seg.ahead.position == seg.position.atUp():
+        #logging.debug("Tail image",seg)
+        if seg.ahead.orientation == UP:
             return self.spriteSheet.image(3,2)
-        if seg.ahead.position == seg.position.atDown():
+        if seg.ahead.orientation == DOWN:
             return self.spriteSheet.image(4,3)
-        if seg.ahead.position== seg.position.atRight():
+        if seg.ahead.orientation == RIGHT:
             return self.spriteSheet.image(4,2)
-        if seg.ahead.position == seg.position.atLeft():
+        if seg.ahead.orientation == LEFT:
             return self.spriteSheet.image(3,3)
 
     def bodyImage(self,seg):
-        #print("Body: ",seg.position.x,seg.position.y)
-        #print("Body target: ",seg.target.x,seg.target.y)
-        #print("Ahead position: ",seg.ahead.position.x,seg.ahead.position.y)
-        #print("Ahead target: ",seg.ahead.target.x,seg.ahead.target.y)
-        #print("Behind position: ",seg.behind.position.x,seg.behind.position.y)
-        #print("Behind target: ",seg.behind.target.x,seg.behind.target.y)
-        if seg.ahead.position == seg.position.atUp() :
-            if seg.behind.position == seg.position.atDown():
+        if seg.ahead.orientation == UP :
+            if seg.orientation == UP:
                 return self.spriteSheet.image(2,1)
-            if seg.behind.position == seg.position.atLeft():
+            if seg.orientation == RIGHT:
                 return self.spriteSheet.image(2,2)
             else :
                 return self.spriteSheet.image(0,1)
-        if seg.ahead.position == seg.position.atDown() :
-            if seg.behind.position == seg.position.atUp():
+        if seg.ahead.orientation == DOWN :
+            if seg.orientation == DOWN:
                 return self.spriteSheet.image(2,1)
-            if seg.behind.position == seg.position.atLeft():
+            if seg.orientation == RIGHT:
                 return self.spriteSheet.image(2,0)
             else :
                 return self.spriteSheet.image(0,0)
-        if seg.ahead.position == seg.position.atRight() :
-            if seg.behind.position == seg.position.atLeft():
+        if seg.ahead.orientation == RIGHT :
+            if seg.orientation == RIGHT:
                 return self.spriteSheet.image(1,0)
-            if seg.behind.position == seg.position.atUp():
+            if seg.orientation == DOWN:
                 return self.spriteSheet.image(0,1)
             else :
                 return self.spriteSheet.image(0,0)
-        if seg.ahead.position == seg.position.atLeft() :
-            if seg.behind.position == seg.position.atRight():
+        if seg.ahead.orientation == LEFT :
+            if seg.orientation == LEFT:
                 return self.spriteSheet.image(1,0)
-            if seg.behind.position == seg.position.atUp():
+            if seg.orientation == DOWN:
                 return self.spriteSheet.image(2,2)
             else :
                 return self.spriteSheet.image(2,0)
         
-    def update(self, events):
+    def on_handle_event(self, event):
         if self.alive :
-            for event in events:
+            #for event in events:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_RIGHT or event.key == pygame.K_LEFT or event.key == pygame.K_DOWN or event.key == pygame.K_UP:
                         lastKey = None
@@ -255,263 +254,472 @@ class Snake(Component):
                                 self.keysPressed.insert(0,event.key)
                         else :
                             self.keysPressed.insert(0,event.key)
-            if self.started:
-                self.compteur = self.compteur + 1
-                if self.compteur >= self.frames:
-                    print("Keys pressed:",self.keysPressed)
+    def update(self):
+        if self.alive :
+            self.tongue.update()
+            self.eyes.update()
+            if self.nextMove != None:
+                if self.frameCounter.check():
+                    logging.debug("Keys pressed:%s",self.keysPressed)
                     self.handleKeyPressed()
-                    self.move()
-                    if self.checkAlive():
-                        for seg in self.head.backward():
-                            seg.reset()
-                        apple = self.parent.apples[-1]
-                        if self.head.position == apple.position:
+                    if self.checkNextMoveAllowed():
+                        self.move()
+                        apple = self.playArea.apple
+                        if self.head.cell == apple.cell:
                             self.eatApple(apple)
-                    self.compteur = 0
+                self.frameCounter.update()
             else:
                 self.handleKeyPressed()
+                if self.nextMove != None:
+                    self.frameCounter.start()
+            super().update()
     def handleKeyPressed(self):
         if len(self.keysPressed) > 0:
             keyPressed = self.keysPressed.pop()
             self.changeDirection(keyPressed)
-    def checkAlive(self):
+    def checkNextMoveAllowed(self):
         if not self.headTouchWall():
-            if self.isAt(self.target):
+            if self.headTouchBody():
                 self.alive = False
         else:
             self.alive = False
         return self.alive
+    def headTouchBody(self):
+        cell = self.head.cell.at(self.nextMove.x, self.nextMove.y)
+        for seg in self.head.behind.backward():
+            if seg.cell == cell:
+                return True
+        return False
     def headTouchWall(self):
-        b = self.head.position.y >= 0 and self.head.position.y < self.playArea.height and self.head.position.x < self.playArea.width and self.head.position.x >= 0       
-        return not b
+        return self.head.cell.at(self.nextMove.x, self.nextMove.y).blocking
     def eatApple(self, apple):
         apple.crunched = True
-        sound = pygame.mixer.Sound('./son/Crunched.wav')
+        if self.playArea.get_application().get_window("optionsWindow").sound :
+            sound = pygame.mixer.Sound('./son/Crunched.wav')
         #pygame.mixer.music.load('./son/Crunched.wav')
-        sound.play()
-        print("Apple crunched!")
+            sound.play()
+        logging.debug("Apple crunched!")
         self.grow()
+    def add_tongue(self, spriteSheet):
+        self.tongue = SnakeTongue(self,spriteSheet)
+    def add_eyes(self, spriteSheet):
+        self.eyes = SnakeEyes(self,spriteSheet)
+class SnakeTongue(pygame.sprite.Sprite):
+    TRIGGER_FRAME=10
+    def __init__(self, snake, spriteSheet):
+        pygame.sprite.Sprite.__init__(self)                
+        self.spriteSheet = spriteSheet
+        self.snake = snake
+        self.out = False
+        self.index = 0
+        self.trigger = TimeTrigger(150)
+    def update(self):
+        if self.snake.alive :
+            if not self.out:
+                self.trigger.start()
+                n = random.randint(0,500)
+                if n == 0:
+                    self.out = True
+                    self.snake.add(self)         
+                #if self.out:
+                #    sound = pygame.mixer.Sound('./son/Hiss.wav')
+                #    sound.play()
+            else :
+                if self.index > 20:
+                    self.index = 0
+                    self.trigger.reset()
+                    self.out = False
+                    self.snake.remove(self)    
+                else:
+                    if self.trigger.check():
+                        self.index += 1                
+                    self.trigger.update()
+                    self._draw()
+    def _draw(self):
+        if self.out :
+            shift = self.snake.nextMove
+            if shift == None:
+                shift = self.snake.head.orientation
+            cell = self.snake.head.cell.at(shift.x,shift.y)
+            self.image,shift = self.get_image()
+            if self.image != None and cell != None and not cell.blocking:
+                logging.debug("Head cell=%d %d", self.snake.head.cell.i, self.snake.head.cell.j)
+                logging.debug("Tongue cell=%d %d", cell.i, cell.j)
+                #cell.draw_image(image, shift)
+                self.rect = Rect(cell.x+shift[0], cell.y+shift[1], self.image.get_width(), self.image.get_height())
 
-class Apple(Component):
-    imageApple = pygame.transform.scale(pygame.image.load(os.path.join('images', 'Pomme.png')), (BOXSIZE-1, BOXSIZE-1))
+    def get_image(self):
+        shift = (-10,0)
+        image = self.spriteSheet.image(0,self.index)
+        if image == None:
+            self.index = 0
+            self.out = False
+            self.snake.remove(self)         
+        else:
+            image = pygame.transform.scale(image, (48, Cell.SIZE))
+            orientation = self.snake.nextMove
+            if orientation == None:
+                orientation = self.snake.head.orientation
+            if orientation == UP:
+                image = pygame.transform.rotate(image, 90)
+                shift = (0,-10)
+            elif orientation == DOWN :
+                image = pygame.transform.rotate(image, 270)
+                shift = (0,-10)
+            elif orientation == LEFT :
+                image = pygame.transform.rotate(image, 180)
+            elif orientation == RIGHT :
+                image = image
+            logging.debug("Index=%d",self.index)
+        return (image,shift)
 
-    def __init__(self, position):
-        super().__init__("apple", position.xip, position.yip)
-        self.position = position
+class SnakeEye(pygame.sprite.Sprite):
+    def __init__(self, snake, spriteSheet, right):
+        pygame.sprite.Sprite.__init__(self)            
+        self.spriteSheet = spriteSheet
+        self.snake = snake
+        self.right = right    
+        self.index = 0    
+        self.update()
+    def update(self):
+        if self.right:
+            logging.debug("Update right eye with index %d", self.index)
+        else:
+            logging.debug("Update left eye with index %d", self.index)
+        cell = self.snake.head.cell
+        self.image = self.spriteSheet.image(0,self.index)
+        if self.image == None or cell == None:
+            self.index = 0
+            self.snake.remove(self)         
+        else:
+            orientation = self.snake.nextMove
+            if orientation == None:
+                orientation = self.snake.head.orientation
+            self.image = pygame.transform.scale(self.image, (14, 14))
+            if orientation ==  UP:
+                self.image = pygame.transform.rotate(self.image, 90)
+                if self.right:
+                    shift = (3,7)
+                else:
+                    shift = (14,7)
+            if orientation == DOWN:
+                self.image = pygame.transform.rotate(self.image, 270)
+                if self.right:
+                    shift = (3,11)
+                else:
+                    shift = (14,11)
+            if orientation == LEFT:
+                self.image = pygame.transform.rotate(self.image, 180)
+                if self.right:
+                    shift = (7,4)
+                else:
+                    shift = (7,14)
+            if orientation == RIGHT:
+                if self.right:
+                    shift = (11,3)
+                else:
+                    shift = (11,14)
+            logging.debug("Index=%d",self.index)
+            self.rect=Rect(cell.x+shift[0],cell.y+shift[1], self.image.get_width(), self.image.get_height())
+class SnakeEyes():
+    TRIGGER_FRAME=10
+    def __init__(self, snake, spriteSheet):
+        self.spriteSheet = spriteSheet
+        self.snake = snake
+        self.blinking = False
+        self.index = 0
+        self.rightEye = SnakeEye(snake,spriteSheet,True)
+        self.leftEye = SnakeEye(snake,spriteSheet,False)
+        self.trigger = TimeTrigger(100)
+    def update(self):
+        logging.debug("Update blinking ")
+        if self.snake.alive :
+            if not self.blinking:
+                n = random.randint(0,500)
+                if n == 0:
+                    self.trigger.start()
+                    self.blinking = True
+                    self.snake.add(self.rightEye)         
+                    self.snake.add(self.leftEye)         
+                    self.rightEye.index = 0
+                    self.leftEye.index = 0
+            else :
+                if self.index > 8:
+                    self.index = 0
+                    self.trigger.reset()
+                    self.snake.remove(self.rightEye)         
+                    self.snake.remove(self.leftEye)    
+                    self.blinking = False     
+                else :
+                    if self.trigger.check():
+                        self.rightEye.index = self.index
+                        self.leftEye.index = self.index
+                        self.index += 1
+                    self.trigger.update()
+                #self._draw()
+
+class Apple:
+    def __init__(self, cell, spriteSheet):
+        self.image = pygame.transform.scale(spriteSheet.image(0,3), (Cell.SIZE, Cell.SIZE))
+        self.cell = cell
         self.crunched = False
     def draw(self):
         if not self.crunched:
-            Game.window.blit(Apple.imageApple, (self.position.xInPixel(), self.position.yInPixel()))
+            self.cell.draw_image(self.image)
 
-
-class HomeScreen(Screen):
+class HomeWindow(Window):
     def __init__(self):
-        super().__init__("Home")
-        self.image = pygame.image.load(os.path.join('images', 'Menu.png')).convert()
-        classic = Button("classicBtn",300,300, 220, 60, "Classique", 50, self.play)
-        self.addComponent(classic)
-        options = Button("optionsBtn",300,370, 220, 60, "Options", 50, self.showOptions)
-        self.addComponent(options)
-    def play(self):
-        self.game.setScreen("Play")
-        self.flag = False
+        super().__init__("homeWindow")
+        self.label = Label("homeLabel", (270,70), (120,60),"Jouer à Snake", className='title')        
+        self.add_component(self.label)
+        classic = Button("classicBtn","Classique", self.playClassic, className='home')
+        self.add_component(classic)
+        special = Button("specialBtn","Spécial", self.playSpecial, className='home')
+        self.add_component(special)
+        options = Button("optionsBtn","Options", self.showOptions, className='home')
+        self.add_component(options)
+        quit = Button('quitBtn', "Quit", self.quit)
+        self.add_component(quit)
+        #self.style.background.image='Menu.png'
+        logging.debug("id=%s", options.get_id())
+    def playClassic(self):
+        w = self.application.get_window("gameBoard")
+        w.game.set_level('classic') 
+        w.show()
+    def playSpecial(self):
+        w = self.application.get_window("gameBoard")
+        w.game.set_level('labyrinth')
+        w.show()
     def showOptions(self):
-        self.game.setScreen("Options")
-        self.flag = False
+        self.application.show_window("optionsWindow")
+    def quit(self):
+        self.application.quit()
 
-class Score(Component):
-    def __init__(self, x, y):
-        super().__init__("scorePanel", x, y)
-    def draw(self):
-        Game.window.blit(Apple.imageApple, (self.absoluteX(), self.absoluteY()))
-        text = Game.font.render("Score : "+str(len(self.parent.apples)-1),0,(0,0,0),(255,255,255))
-        Game.window.blit(text, (self.absoluteX()+40, self.absoluteY()+8))
-class GameOver(Component):
-    def __init__(self, x, y):
-        super().__init__("gameOverPanel",x,y)
-        self.gameOver = pygame.image.load(os.path.join('images', 'game_over.jpg')).convert()
-    def draw(self):
-        Game.window.blit(self.gameOver, (self.absoluteX(), self.absoluteY()))
-class HighestScore(Component):
-    def __init__(self, x, y):
-        super().__init__("highscorePanel", x, y)
-        self.value = 0
-        if os.path.isfile(Game.highScoreFilename): 
-            file = open(Game.highScoreFilename,"r")
-            readFile = file.read()
-            if len(readFile) > 0:
-                self.value = int(readFile)
-            file.close()
-        self.hightscore = Game.font.render("Highscore : "+str(self.value),0,(0,0,0),(255,255,255))
-    def draw(self):
-        Game.window.blit(self.hightscore, (self.absoluteX(), self.absoluteY()+8))
-    def save(self):
-        score = len(self.parent.apples)-1
-        if score > self.value : 
-            file = open(Game.highScoreFilename,"w")
-            file.write(str(score)) 
-            file.close()
-class PlayArea(Container):
-    def __init__(self, x, y, width, height):
-        super().__init__("playArea", x, y)
-        self.width=width
-        self.height = height
-        self.image = pygame.Surface((BOXSIZE*width, BOXSIZE*height))
-        pygame.draw.rect(self.image, Game.theme.colors['CELL_EVEN'], (0, 0, BOXSIZE*width, BOXSIZE*height))
-        for i in range(0, width):
-            if(i%2 == 0):
-                for j in range(0, int((height+1)/2)):
-                    pygame.draw.rect(self.image, Game.theme.colors['CELL_ODD'], (BOXSIZE*i, BOXSIZE*(2*j), BOXSIZE, BOXSIZE))
-            if(i%2 == 1):
-                for j in range(0, int((height-1)/2)):
-                    pygame.draw.rect(self.image, Game.theme.colors['CELL_ODD'], (BOXSIZE*i, BOXSIZE*(2*j)+BOXSIZE, BOXSIZE, BOXSIZE))
-    def draw(self):
-        Game.window.blit(self.image, (self.absoluteX(),self.absoluteY()))
+class ScoreView(Container):
+    def __init__(self, position, dimension, score=None):
+        super().__init__("scorePanel", position, dimension )
+        self.score = score
+        icon = ImageView("scoreIcon", None, (Cell.SIZE, Cell.SIZE),'apple.png')
+        self.add_component(icon)
+        #icon = pygame.transform.scale(pygame.image.load(os.path.join('images', 'Pomme.png')), (Cell.SIZE, Cell.SIZE))
+        #self.backgroundLayer.blit(icon, (0, 0))
+        self.title = "%s"
+        text = self.title % self.score.value
+        self.label = Label("scoreLabel", (Cell.SIZE+1,0), (60, dimension[1]),text)
+        self.add_component(self.label)
+        
+    def update(self):
+        super().update()
+        text = self.title % self.score.value
+        self.label.set_text(text)
+        self.label.update()
+class GameOver(Window):
+    def __init__(self, position, dimension):
+        super().__init__("gameOverPanel",position,dimension)
+        replay = Button("replayBtn","Rejouer", self.replay)
+        self.add_component(replay)
+        cancel = Button("cancelBtn","Annuler", self.cancel)
+        self.add_component(cancel)
+    def replay(self):
+        w = self.application.get_window("gameBoard")
+        w.remove_overlay()
+        w.stop()
+        w.preparePlay()
+        self.hide()
+    def cancel(self):
+        w = self.application.get_window("gameBoard")
+        w.remove_overlay()
+        w.stop()
+        self.hide()
+        w.hide()
+
+    def on_handle_eventsss(self, event):
+        w = self.get_width()
+        h = self.get_height()
+        if event.type == MOUSEBUTTONDOWN:
+            if event.button == 1 and self.absoluteX()+w > event.pos[0] > self.absoluteX() and self.absoluteY()+h > event.pos[1]> self.absoluteY():
+                self.container.stop()
+class HighestScoreView(Container):
+    def __init__(self, position, dimension, score=None):
+        super().__init__("highestScorePanel", position, dimension)
+        self.score = score
+        icon = ImageView("highestScoreIcon", None, (Cell.SIZE, Cell.SIZE),'trophy.png')
+        self.add_component(icon)
+
+        text = str(self.score.value)
+        self.label = Label("highestScoreLabel", (Cell.SIZE+1,0), (60,self.dimension.get_height()),text)
+        self.add_component(self.label)
+    def update(self):
+        super().update()
+    def set_highestscore(self, score):
+        self.score = score
+        text = str(self.score.value)
+        self.label.set_text(text)
+class PlayArea(Component):
+    def __init__(self, position, game, map):
+        super().__init__("snakePlayArea", position, (Cell.SIZE*map.width,Cell.SIZE*map.height))
+        self.spriteSheet = SpriteSheet(self.style.background.image, 32, 32, 5, 4)
+        map.spriteSheet = self.spriteSheet
+        self.gridWidth  = map.width
+        self.gridHeight = map.height
+        self.snake = None
+        self.apple = None
+        self.map = map
+        self.map.area = self
+        logging.debug("taille=%d %d",self.gridWidth, self.gridHeight)
+
+    def update(self):
+        self.set_dirty(True)
+        for line in self.map.cells:
+            for cell in line:
+                cell.draw()
+        self.apple.draw()
+        self.snake.draw()
         super().draw()
-    def newApple(self) :
-        cell = Cell(random.randint(0,self.width-1), random.randint(0,self.height-1),self)
-        return Apple(cell)
-    def newSnake(self) :
-        cell = Cell(int(self.width/2), int(self.height/2), self)
-        return Snake(cell, self)
-
-class Cell:
-    def __init__(self, x, y, area):
-        self.x = x
-        self.xip = x*BOXSIZE+(area.x+1)
-        self.y = y
-        self.yip = y*BOXSIZE+(area.y+1)
-        self.area = area
-    def xInPixel(self):
-        return round(self.xip)
-    def incrementXInPixel(self, n):
-        self.xip = self.xip+n
-#        return self.x*BOXSIZE+(GAMEAREA_ORIGINX+1)
-    def yInPixel(self):
-        return round(self.yip)
-#        return self.y*BOXSIZE+(GAMEAREA_ORIGINY+1)
-    def incrementYInPixel(self, n):
-        self.yip = self.yip + n
-    def __eq__(self, other):
-        if isinstance(other, Cell):
-            return self.x == other.x and self.y == other.y
+    def on_handle_event(self, event):
+        if event.type == USEREVENT:
+            self.snake.update()
+        else:
+            self.snake.on_handle_event(event)
+    def addApple(self) :
+        cell = self.map.cell(random.randint(0,self.gridWidth-1), random.randint(0,self.gridHeight-1))
+        while self.inSnake(cell) or self.inWall(cell):
+            cell = self.map.cell(random.randint(0,self.gridWidth-1), random.randint(0,self.gridHeight-1))
+        self.apple = Apple(cell, self.spriteSheet)
+        return self.apple
+    def inWall(self, cell):
+        return cell.blocking
+    def inSnake(self, cell):
+        for seg in self.snake.head.backward():
+            if seg.cell == cell:
+                return True
         return False
-    def atRight(self):
-        return Cell(self.x+1,self.y,self.area)
-    def atLeft(self):
-        return Cell(self.x-1,self.y,self.area)
-    def atUp(self):
-        return Cell(self.x,self.y-1,self.area)
-    def atDown(self):
-        return Cell(self.x,self.y+1,self.area)
-    def setX(self, x) :
-        self.x = x
-        self.xip = x*BOXSIZE+(self.area.x+1)
-    def setY(self, y) :
-        self.y = y
-        self.yip = y*BOXSIZE+(self.area.y+1)
+    def addSnake(self) :
+        cell = self.map.cell(*self.map.startCell)
+        self.snake = Snake(cell, self.spriteSheet, LEFT)
+        logging.debug('%s',self.snake)
+        logging.debug('Snake head position: %d %d %d %d',self.snake.head.cell.x, self.snake.head.cell.y, self.snake.head.cell.absoluteX(), self.snake.head.cell.absoluteY())
+        tongueSpriteSheet = SpriteSheet("tongue.png",48,24,1,21)
+        self.snake.add_tongue(tongueSpriteSheet)
+        blinkSpriteSheet = SpriteSheet("blink.png",28,28,1,9)
+        self.snake.add_eyes(blinkSpriteSheet)
     def reset(self):
-        self.xip = self.x*BOXSIZE+(self.area.x+1)
-        self.yip = self.y*BOXSIZE+(self.area.y+1)
-    def convertPositionToPixel(self,x,y):
-        return (x*BOXSIZE+(self.area.x+1),y*BOXSIZE+(self.area.y+1))
+        self.apple = None
+        self.snake = None
 
-class PlayScreen(Screen):
-    compteur = 0
-    perdu = False
+class GameBoard(Window):
     GAMEAREA_ORIGINX = 130
     GAMEAREA_ORIGINY = 70
 
-    def __init__(self, nbHorizontalCells, nbVerticalCells):
-        super().__init__("Play")
-        x = (Game.WINDOWWIDTH-(nbHorizontalCells*BOXSIZE))/2
-        y = min((Game.WINDOWHEIGHT-(nbVerticalCells*BOXSIZE))/2,PlayScreen.GAMEAREA_ORIGINY)
-        self.playArea = PlayArea(int(x),int(y),nbHorizontalCells, nbVerticalCells)
-        self.addComponent(self.playArea)
-        self.gameOver = GameOver(240, 360)
-        self.score = Score(140, 25)
-        self.addComponent(self.score)
-        self.highestScore = HighestScore(500, 25)
-        self.addComponent(self.highestScore)
-        PlayScreen.perdu = False
-        self.apples = []
-        self.serpent = None
-
-    def run(self):
-        for apple in self.apples:
-            self.removeComponent(apple)
-        if self.serpent != None:
-            self.removeComponent(self.serpent)
-        self.removeComponent(self.gameOver)
-
-        self.apples = []
-        PlayScreen.perdu = False
-        self.serpent = self.playArea.newSnake()  
-        apple = self.playArea.newApple()
-        while self.serpent.isAt(apple.position):
-            apple = self.playArea.newApple()
-        self.apples.append(apple)
-        self.addComponent(apple)
-        self.addComponent(self.serpent)
-        if self.game.screens["Options"].music :
+    def __init__(self, levelMap, cellSize=32):
+        super().__init__("gameBoard")
+        Cell.SIZE=cellSize
+        self.game = Game('classic')
+        self.scoreView = ScoreView((140, 25), (200,40), Score(0,''))
+        self.add_component(self.scoreView)
+        self.highestScore = HighestScoreView((500, 25), (150,40), self.game.highestScores.get_highest_score())
+        self.add_component(self.highestScore)
+        self.playArea = None
+    def preparePlay(self):
+        self.playArea.reset()
+        self.playFinished = False
+        self.playArea.addSnake()  
+        self.playArea.addApple()
+        self.game.new_play()
+        self.scoreView.score = self.game.score
+        self.highestScore.set_highestscore(self.game.highestScores.get_highest_score())
+        if self.application.get_window("optionsWindow").music :
             volume = pygame.mixer.music.get_volume() #Retourne la valeur du volume, entre 0 et 1
             pygame.mixer.music.set_volume(0.2) #Met le volume à 0.5 (moitié)
             pygame.mixer.music.load('./son/theme-music.wav')
             pygame.mixer.music.play(-1)
+
+    def run(self):
+        if self.playArea != None:
+            self.remove_component(self.playArea)
+        map = PlayMap(self.game.level)
+        x = min([(Application.WINDOWWIDTH-(map.width*Cell.SIZE))/2,GameBoard.GAMEAREA_ORIGINX])
+        y = min([(Application.WINDOWHEIGHT-(map.height*Cell.SIZE))/2,GameBoard.GAMEAREA_ORIGINY])
+        logging.debug("W1= %d",Application.WINDOWWIDTH)
+        logging.debug("POS= %d %d",x,y)
+
+        self.playArea = PlayArea((int(x),int(y)),self.game, map)
+        self.add_component(self.playArea)
+        self.preparePlay()
+        #self.get_application().remove_window(self.gameOver)
+        #self.gameOver.visible = False
+        #self.get_application().add_window(self.gameOver)
         
         super().run()
-    def update(self, events):
-        super().update(events)
-        if not self.serpent.alive:
-            PlayScreen.perdu = True
-            self.highestScore.save()
-            self.addComponent(self.gameOver)
-            pygame.mixer.music.fadeout(400) #Fondu à 400ms de la fin des musiques
-            pygame.mixer.music.stop()
-            self.game.setScreen("Home")
-            self.flag = False
-        else:
-            apple = self.apples[-1]
-            if apple.crunched:
-                apple = self.playArea.newApple()
-                while self.serpent.isAt(apple.position):
-                    apple = self.playArea.newApple()
-                self.apples.append(apple)
-                super().addComponent(apple)
+    def on_handle_event(self, events):
+        super().on_handle_event(events)
+        if not self.playFinished:
+            if not self.playArea.snake.alive:
+                self.game.highestScores.add_score(self.game.score)
+                self.game.highestScores.save()
+                self.add_overlay()
+                gameOver = self.application.get_window("gameOverPanel")
+                gameOver.show()
+                self.playFinished = True
+                pygame.mixer.music.fadeout(2000) #Fondu de 2s à la fin de la musique
+            else:
+                apple = self.playArea.apple
+                if apple.crunched:
+                    self.playArea.addApple()
+                    self.game.score.value += 1
+                    logging.debug("Score=%d",self.game.score.value)
+    def stop(self):
+        #pygame.mixer.music.fadeout(400) #Fondu à 400ms de la fin des musiques
+        pygame.mixer.music.stop()
+        self.hide()
 
-class OptionsScreen(Screen):
+
+class OptionsWindow(Window):
     def __init__(self):
-        super().__init__("Options")
-        self.image = pygame.image.load(os.path.join('images', 'Options.png')).convert()
-        retour = Button("retourBtn",300,500, 150, 60, "Retour", 50, self.home)
-        self.addComponent(retour)
-        self.font = pygame.font.Font(None, 40)
-        musicOn = Button("musicOnBtn",300,370, 80, 60, "ON", 40, self.on)
-        self.addComponent(musicOn)
-        musicOff = Button("musicOffBtn",400,370, 80, 60, "OFF", 40, self.off)
-        self.addComponent(musicOff)
+        super().__init__("optionsWindow") #, position=(50,50), dimension=(500,600))
+        self.title = Label("optionsLabel", (270,70), (120,60),"Options", className='title')        
+        self.add_component(self.title)
+        soundLabel = Label("musicLabel", (180, 190), (120,60),"Sons")        
+        self.add_component(soundLabel)
+        soundOn = Button("soundOnBtn", "ON", self.soundOn,(300,190), (80, 60))
+        self.add_component(soundOn)
+        soundOff = Button("soundOffBtn", "OFF", self.soundOff,(400,190), (80, 60))
+        self.add_component(soundOff)
+        musicLabel = Label("musicLabel", (180, 290), (120,60),"Musique")        
+        self.add_component(musicLabel)
+        musicOn = Button("musicOnBtn", "ON", self.musicOn,(300,290), (80, 60))
+        self.add_component(musicOn)
+        musicOff = Button("musicOffBtn", "OFF", self.musicOff,(400,290), (80, 60))
+        self.add_component(musicOff)
+        retour = Button("retourBtn", "Retour", self.cancel,position=(300,370), dimension=(150, 60))
+        self.add_component(retour)
         self.music = True
-    def home(self):
-        self.game.setScreen("Home")
-        self.flag = False
-    def on(self):
-        text = self.font.render("Music",0,(0,0,0),None)
-        Game.window.blit(text, (300, 300))
+        self.sound = True
+        self.style.font.size=42
+    def cancel(self):
+        self.hide()
+    def soundOn(self):
+        self.sound = True
+        logging.debug("Sound ON")
+    def soundOff(self):
+        logging.debug("Sound OFF")
+        self.sound = False
+    def musicOn(self):
         self.music = True
-        print("Music ON")
-    def off(self):
-        print("Music OFF")
+        logging.debug("Music ON")
+    def musicOff(self):
+        logging.debug("Music OFF")
         self.music = False
-        
-theme = Theme()
-theme.colors['CELL_EVEN'] = NamedColors.VIOLET
-theme.colors['CELL_ODD'] = NamedColors.DARK_VIOLET
-
-game = Game('Snake', 60, theme)
-game.addScreen(HomeScreen())
-game.addScreen(PlayScreen(17,17))
-game.addScreen(OptionsScreen()) 
-game.setScreen("Home") 
+logging.basicConfig(filename='snake.log', filemode='w', level=logging.WARNING)
+themeName = 'default'
+if len(sys.argv) > 1:
+    themeName = sys.argv[1]
+theme = Theme.parseCss(themeName)
+game = Application('Snake', 2000, theme)
+game.add_window(HomeWindow(),True)
+game.add_window(GameBoard("level1", 30))
+game.add_window(OptionsWindow())
+game.add_window(GameOver((190, 260), (318,250)))
 game.run()
 
 sys.exit()
